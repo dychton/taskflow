@@ -1,7 +1,7 @@
 
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/browser';
 
 export default function PasswordResetScreen() {
@@ -11,43 +11,77 @@ export default function PasswordResetScreen() {
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const [complete, setComplete] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const started = useRef(false);
 
   useEffect(() => {
-    const supabase = createClient();
-    let active = true;
+    if (started.current) return;
+    started.current = true;
 
-    const { data: { subscription } } =
-      supabase.auth.onAuthStateChange((event, session) => {
-        if (!active) return;
-        if (event === 'PASSWORD_RECOVERY' && session) {
-          setReady(true);
-          setMessage('');
+    async function initialiseRecovery() {
+      try {
+        const params = new URLSearchParams(
+          window.location.hash.substring(1)
+        );
+
+        const access_token = params.get('access_token');
+        const refresh_token = params.get('refresh_token');
+        const type = params.get('type');
+
+        window.history.replaceState(
+          null,
+          '',
+          window.location.pathname
+        );
+
+        if (
+          !access_token ||
+          !refresh_token ||
+          type !== 'recovery'
+        ) {
+          setMessage(
+            'Please open a fresh password recovery link.'
+          );
+          return;
         }
-      });
 
-    // Also recognise a valid session established by
-    // Supabase after following the recovery link.
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (!active) return;
-      if (error) {
-        setMessage(error.message);
-      } else if (data.session) {
+        const supabase = createClient();
+
+        const { data, error } =
+          await supabase.auth.setSession({
+            access_token,
+            refresh_token,
+          });
+
+        if (error || !data.session) {
+          throw new Error(
+            'Recovery link is invalid or expired.'
+          );
+        }
+
         setReady(true);
+      } catch {
+        setMessage(
+          'Unable to verify the recovery link. Please request a new one.'
+        );
+      } finally {
+        setLoading(false);
       }
-    });
+    }
 
-    return () => {
-      active = false;
-      subscription.unsubscribe();
-    };
+    initialiseRecovery();
   }, []);
 
-  async function updatePassword(e: React.FormEvent<HTMLFormElement>) {
+  async function updatePassword(
+    e: React.FormEvent<HTMLFormElement>
+  ) {
     e.preventDefault();
     setMessage('');
 
+    if (!ready) return;
+
     if (password.length < 12) {
-      setMessage('Use a password of at least 12 characters.');
+      setMessage('Use at least 12 characters.');
       return;
     }
 
@@ -61,17 +95,24 @@ export default function PasswordResetScreen() {
     try {
       const supabase = createClient();
 
-      const { error } = await supabase.auth.updateUser({
-        password,
-      });
+      const { error } =
+        await supabase.auth.updateUser({ password });
 
       if (error) throw error;
 
-      await supabase.auth.signOut();
       setPassword('');
       setConfirm('');
-      setComplete(true);
       setReady(false);
+      setComplete(true);
+
+      const { error: signOutError } =
+        await supabase.auth.signOut();
+
+      if (signOutError) {
+        setMessage(
+          'Password saved, but automatic sign-out failed.'
+        );
+      }
     } catch (error) {
       setMessage(
         error instanceof Error
@@ -91,17 +132,25 @@ export default function PasswordResetScreen() {
           <span>TaskFlow</span>
         </div>
 
-        <span className="eyebrow">PRIVATE OWNER WORKSPACE</span>
+        <span className="eyebrow">
+          PRIVATE OWNER WORKSPACE
+        </span>
+
         <h1>Set your password</h1>
 
-        {complete ? (
+        {loading ? (
+          <p>Verifying your recovery link...</p>
+        ) : complete ? (
           <>
             <p>Your password has been updated.</p>
             <a href="/login">Return to sign in</a>
           </>
         ) : ready ? (
-          <form onSubmit={updatePassword} className="stack">
-            <p>Choose a new password for your owner account.</p>
+          <form
+            onSubmit={updatePassword}
+            className="stack"
+          >
+            <p>Choose your new TaskFlow password.</p>
 
             <label>
               New password
@@ -127,20 +176,23 @@ export default function PasswordResetScreen() {
               />
             </label>
 
-            {message && <p role="alert">{message}</p>}
-
-            <button className="btn primary" disabled={saving}>
-              {saving ? 'Saving...' : 'Save new password'}
+            <button
+              className="button primary"
+              disabled={saving}
+            >
+              {saving
+                ? 'Saving...'
+                : 'Save new password'}
             </button>
           </form>
         ) : (
-          <>
-            <p>
-              Open a valid password recovery link to
-              continue setting your password.
-            </p>
-            {message && <p role="alert">{message}</p>}
-          </>
+          <p>Open a valid password recovery link.</p>
+        )}
+
+        {message && (
+          <div className="error" role="alert">
+            {message}
+          </div>
         )}
       </section>
     </main>
