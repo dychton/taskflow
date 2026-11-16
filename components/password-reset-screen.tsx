@@ -12,64 +12,118 @@ export default function PasswordResetScreen() {
   const [saving, setSaving] = useState(false);
   const [complete, setComplete] = useState(false);
   const [loading, setLoading] = useState(true);
-  const started = useRef(false);
+  const recoverySession = useRef(false);
 
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
+    let active = true;
+
+    const url = new URL(window.location.href);
+    const params = new URLSearchParams(
+      url.hash.substring(1)
+    );
+
+    const access_token = params.get('access_token');
+    const refresh_token = params.get('refresh_token');
+    const type = params.get('type');
+    const code = url.searchParams.get('code');
+
+    const supabase = createClient();
+
+    function allowRecovery() {
+      if (!active) return;
+
+      recoverySession.current = true;
+
+      window.history.replaceState(
+        null,
+        '',
+        window.location.pathname
+      );
+
+      setReady(true);
+      setLoading(false);
+      setMessage('');
+    }
+
+    const { data: { subscription } } =
+      supabase.auth.onAuthStateChange(
+        (event, session) => {
+          if (
+            active &&
+            event === 'PASSWORD_RECOVERY' &&
+            session &&
+            code
+          ) {
+            allowRecovery();
+          }
+        }
+      );
 
     async function initialiseRecovery() {
       try {
-        const params = new URLSearchParams(
-          window.location.hash.substring(1)
-        );
-
-        const access_token = params.get('access_token');
-        const refresh_token = params.get('refresh_token');
-        const type = params.get('type');
-
-        window.history.replaceState(
-          null,
-          '',
-          window.location.pathname
-        );
-
-        if (
-          !access_token ||
-          !refresh_token ||
-          type !== 'recovery'
-        ) {
-          setMessage(
-            'Please open a fresh password recovery link.'
-          );
+        if (code) {
+          // The browser client handles PKCE automatically.
+          // Wait for the PASSWORD_RECOVERY event.
           return;
         }
 
-        const supabase = createClient();
-
-        const { data, error } =
-          await supabase.auth.setSession({
-            access_token,
-            refresh_token,
-          });
-
-        if (error || !data.session) {
-          throw new Error(
-            'Recovery link is invalid or expired.'
+        if (
+          access_token &&
+          refresh_token &&
+          type === 'recovery'
+        ) {
+          window.history.replaceState(
+            null,
+            '',
+            window.location.pathname
           );
+
+          const { data, error } =
+            await supabase.auth.setSession({
+              access_token,
+              refresh_token,
+            });
+
+          if (error || !data.session) {
+            throw new Error('Invalid recovery session.');
+          }
+
+          allowRecovery();
+          return;
         }
 
-        setReady(true);
+        if (active) {
+          setLoading(false);
+          setMessage(
+            'Please open a fresh password recovery link.'
+          );
+        }
       } catch {
-        setMessage(
-          'Unable to verify the recovery link. Please request a new one.'
-        );
-      } finally {
-        setLoading(false);
+        if (active) {
+          setLoading(false);
+          setMessage(
+            'Unable to verify the recovery link. Please request a new one.'
+          );
+        }
       }
     }
 
     initialiseRecovery();
+
+    const timeout = window.setTimeout(() => {
+      if (active && !recoverySession.current) {
+        setLoading(false);
+        setMessage(
+          'Recovery could not be verified. Request a new link and open it in the same browser.'
+        );
+      }
+    }, 15000);
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+      window.clearTimeout(timeout);
+    };
   }, []);
 
   async function updatePassword(
@@ -78,7 +132,7 @@ export default function PasswordResetScreen() {
     e.preventDefault();
     setMessage('');
 
-    if (!ready) return;
+    if (!ready || !recoverySession.current) return;
 
     if (password.length < 12) {
       setMessage('Use at least 12 characters.');
@@ -100,6 +154,7 @@ export default function PasswordResetScreen() {
 
       if (error) throw error;
 
+      recoverySession.current = false;
       setPassword('');
       setConfirm('');
       setReady(false);
@@ -158,7 +213,9 @@ export default function PasswordResetScreen() {
                 type="password"
                 autoComplete="new-password"
                 value={password}
-                onChange={e => setPassword(e.target.value)}
+                onChange={e =>
+                  setPassword(e.target.value)
+                }
                 required
                 minLength={12}
               />
@@ -170,7 +227,9 @@ export default function PasswordResetScreen() {
                 type="password"
                 autoComplete="new-password"
                 value={confirm}
-                onChange={e => setConfirm(e.target.value)}
+                onChange={e =>
+                  setConfirm(e.target.value)
+                }
                 required
                 minLength={12}
               />
@@ -186,7 +245,10 @@ export default function PasswordResetScreen() {
             </button>
           </form>
         ) : (
-          <p>Open a valid password recovery link.</p>
+          <>
+            <p>Open a valid password recovery link.</p>
+            <a href="/login">Return to sign in</a>
+          </>
         )}
 
         {message && (
