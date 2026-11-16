@@ -49,7 +49,7 @@ export default function MfaScreen() {
     <span className="eyebrow">ACCOUNT SECURITY</span><h1><ShieldCheck size={27} className="inline-icon"/> Two-step verification</h1>
     {flow==='loading'&&<p>Checking your authenticator setup…</p>}
     {flow==='enroll'&&<><p>Protect this account with an authenticator app. Keep a separate recovery factor as described in the setup guide.</p>
-      {!qr?<button className="button primary" onClick={startEnroll} disabled={busy}>{busy?'Preparing…':'Set up authenticator'}</button>:<><div className="qr-holder"><img src={`data:image/svg+xml;utf8,${encodeURIComponent(qr)}`} alt="Authenticator enrollment QR code" width={192} height={192}/></div><p className="muted small">If you cannot scan the QR, enter this secret manually. Never share it.</p><code className="secret">{secret}</code></>}
+      {!qr?<button className="button primary" onClick={startEnroll} disabled={busy}>{busy?'Preparing…':'Set up authenticator'}</button>:<><div className="qr-holder"><img src={qr} alt="Authenticator enrollment QR code" width={192} height={192}/></div><p className="muted small">If you cannot scan the QR, enter this secret manually. Never share it.</p><code className="secret">{secret}</code></>}
     </>}
     {flow==='challenge'&&<p>Enter the six-digit code from your registered authenticator.</p>}
     {factor&&<form onSubmit={verify} className="stack"><label>Six-digit authentication code<input required value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,'').slice(0,6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" placeholder="000000"/></label><button className="button primary" disabled={busy||code.length!==6}><KeyRound size={16}/>{busy?'Verifying…':'Verify and continue'}</button></form>}
