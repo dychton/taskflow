@@ -12,10 +12,15 @@ export default function PasswordResetScreen() {
   const [saving, setSaving] = useState(false);
   const [complete, setComplete] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const [factorId, setFactorId] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaRequired, setMfaRequired] = useState(false);
   const recoverySession = useRef(false);
 
   useEffect(() => {
     let active = true;
+    let checking = false;
 
     const url = new URL(window.location.href);
     const params = new URLSearchParams(
@@ -29,20 +34,70 @@ export default function PasswordResetScreen() {
 
     const supabase = createClient();
 
-    function allowRecovery() {
-      if (!active) return;
+    async function prepareRecovery() {
+      if (!active || checking) return;
+      checking = true;
 
-      recoverySession.current = true;
+      try {
+        const { data: aal, error: aalError } =
+          await supabase.auth.mfa
+            .getAuthenticatorAssuranceLevel();
 
-      window.history.replaceState(
-        null,
-        '',
-        window.location.pathname
-      );
+        if (aalError || !aal) {
+          throw new Error(
+            'Unable to verify account security.'
+          );
+        }
 
-      setReady(true);
-      setLoading(false);
-      setMessage('');
+        if (aal.nextLevel === 'aal2' &&
+            aal.currentLevel !== 'aal2') {
+          const { data, error } =
+            await supabase.auth.mfa.listFactors();
+
+          if (error) throw error;
+
+          const factor = data.totp.find(
+            f => f.status === 'verified'
+          );
+
+          if (!factor) {
+            throw new Error(
+              'No verified authenticator is available.'
+            );
+          }
+
+          if (!active) return;
+
+          setFactorId(factor.id);
+          setMfaRequired(true);
+        } else if (aal.nextLevel === null ||
+                   aal.currentLevel === null) {
+          throw new Error(
+            'Unable to verify the recovery session.'
+          );
+        }
+
+        if (!active) return;
+
+        recoverySession.current = true;
+
+        window.history.replaceState(
+          null, '', window.location.pathname
+        );
+
+        setReady(true);
+        setLoading(false);
+        setMessage('');
+      } catch (error) {
+        if (!active) return;
+
+        setLoading(false);
+        setMessage(
+          error instanceof Error
+            ? error.message
+            : 'Unable to prepare password recovery.'
+        );
+      }
     }
 
     const { data: { subscription } } =
@@ -54,18 +109,16 @@ export default function PasswordResetScreen() {
             session &&
             code
           ) {
-            allowRecovery();
+            window.setTimeout(() => {
+              void prepareRecovery();
+            }, 0);
           }
         }
       );
 
     async function initialiseRecovery() {
       try {
-        if (code) {
-          // The browser client handles PKCE automatically.
-          // Wait for the PASSWORD_RECOVERY event.
-          return;
-        }
+        if (code) return;
 
         if (
           access_token &&
@@ -73,9 +126,7 @@ export default function PasswordResetScreen() {
           type === 'recovery'
         ) {
           window.history.replaceState(
-            null,
-            '',
-            window.location.pathname
+            null, '', window.location.pathname
           );
 
           const { data, error } =
@@ -88,7 +139,7 @@ export default function PasswordResetScreen() {
             throw new Error('Invalid recovery session.');
           }
 
-          allowRecovery();
+          await prepareRecovery();
           return;
         }
 
@@ -102,13 +153,13 @@ export default function PasswordResetScreen() {
         if (active) {
           setLoading(false);
           setMessage(
-            'Unable to verify the recovery link. Please request a new one.'
+            'Unable to verify the recovery link. Request a new one.'
           );
         }
       }
     }
 
-    initialiseRecovery();
+    void initialiseRecovery();
 
     const timeout = window.setTimeout(() => {
       if (active && !recoverySession.current) {
@@ -126,13 +177,65 @@ export default function PasswordResetScreen() {
     };
   }, []);
 
-  async function updatePassword(
+  async function verifyAuthenticator(
     e: React.FormEvent<HTMLFormElement>
   ) {
     e.preventDefault();
     setMessage('');
 
     if (!ready || !recoverySession.current) return;
+
+    if (!/^\d{6}$/.test(mfaCode)) {
+      setMessage('Enter a valid six-digit code.');
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      const supabase = createClient();
+
+      const { error } =
+        await supabase.auth.mfa.challengeAndVerify({
+          factorId,
+          code: mfaCode,
+        });
+
+      if (error) throw error;
+
+      const { data, error: aalError } =
+        await supabase.auth.mfa
+          .getAuthenticatorAssuranceLevel();
+
+      if (aalError || data?.currentLevel !== 'aal2') {
+        throw new Error(
+          'Two-step verification was not completed.'
+        );
+      }
+
+      setMfaRequired(false);
+      setMfaCode('');
+    } catch {
+      setMfaCode('');
+      setMessage(
+        'Verification failed. Try a fresh authenticator code.'
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function updatePassword(
+    e: React.FormEvent<HTMLFormElement>
+  ) {
+    e.preventDefault();
+    setMessage('');
+
+    if (
+      !ready ||
+      !recoverySession.current ||
+      mfaRequired
+    ) return;
 
     if (password.length < 12) {
       setMessage('Use at least 12 characters.');
@@ -148,6 +251,26 @@ export default function PasswordResetScreen() {
 
     try {
       const supabase = createClient();
+
+      const { data: aal, error: aalError } =
+        await supabase.auth.mfa
+          .getAuthenticatorAssuranceLevel();
+
+      if (aalError || !aal || !aal.currentLevel ||
+          !aal.nextLevel) {
+        throw new Error(
+          'Unable to verify account security.'
+        );
+      }
+
+      if (
+        aal.nextLevel === 'aal2' &&
+        aal.currentLevel !== 'aal2'
+      ) {
+        throw new Error(
+          'Authenticator verification is required.'
+        );
+      }
 
       const { error } =
         await supabase.auth.updateUser({ password });
@@ -191,7 +314,11 @@ export default function PasswordResetScreen() {
           PRIVATE OWNER WORKSPACE
         </span>
 
-        <h1>Set your password</h1>
+        <h1>
+          {mfaRequired
+            ? 'Verify your identity'
+            : 'Set your password'}
+        </h1>
 
         {loading ? (
           <p>Verifying your recovery link...</p>
@@ -200,6 +327,43 @@ export default function PasswordResetScreen() {
             <p>Your password has been updated.</p>
             <a href="/login">Return to sign in</a>
           </>
+        ) : ready && mfaRequired ? (
+          <form
+            className="stack"
+            onSubmit={verifyAuthenticator}
+          >
+            <p>
+              Enter the six-digit code from your
+              registered authenticator app.
+            </p>
+
+            <label>
+              Authentication code
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                required
+                value={mfaCode}
+                onChange={e =>
+                  setMfaCode(
+                    e.target.value.replace(/\D/g, '')
+                  )
+                }
+                placeholder="000000"
+              />
+            </label>
+
+            <button
+              className="button primary"
+              disabled={saving || mfaCode.length !== 6}
+            >
+              {saving
+                ? 'Verifying...'
+                : 'Verify and continue'}
+            </button>
+          </form>
         ) : ready ? (
           <form
             onSubmit={updatePassword}
