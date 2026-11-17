@@ -109,6 +109,10 @@ ENABLE ROW LEVEL SECURITY;
 
 -- 6. Restrict database privileges
 
+-- Apply RLS even when the table owner accesses these tables.
+ALTER TABLE public.projects FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.project_phases FORCE ROW LEVEL SECURITY;
+
 REVOKE ALL ON public.projects
 FROM PUBLIC, anon, authenticated;
 
